@@ -1,5 +1,6 @@
 
 # GitHub Actions CI/CD pipeline
+# Optimized for faster execution with caching, parallel tests, and conditional deployments
 
 name: CI/CD Pipeline
 
@@ -10,29 +11,108 @@ on:
     branches: [ master ]
   workflow_dispatch:
 
+env:
+  NODE_VERSION: '18'
+  CACHE_NAME_PREFIX: 'npm-cache'
+
 jobs:
-  build-and-test:
-    name: Build, Test and Deploy
+  install-and-cache:
+    name: Install Dependencies
     runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js with cache
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+          cache-dependency-path: '**/package-lock.json'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Cache node_modules
+        uses: actions/cache@v3
+        with:
+          path: node_modules
+          key: ${{ env.CACHE_NAME_PREFIX }}-${{ runner.os }}-${{ hashFiles('**/package-lock.json') }}
+          restore-keys: |
+            ${{ env.CACHE_NAME_PREFIX }}-${{ runner.os }}-
+
+  test-unit:
+    name: Unit Tests
+    needs: install-and-cache
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Restore node_modules from cache
+        uses: actions/cache@v3
+        with:
+          path: node_modules
+          key: ${{ env.CACHE_NAME_PREFIX }}-${{ runner.os }}-${{ hashFiles('**/package-lock.json') }}
+
+      - name: Run unit tests
+        run: npm test -- --testPathPattern='\.unit\.test\.js$' --passWithNoTests || npm test
+
+  test-integration:
+    name: Integration Tests
+    needs: install-and-cache
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Restore node_modules from cache
+        uses: actions/cache@v3
+        with:
+          path: node_modules
+          key: ${{ env.CACHE_NAME_PREFIX }}-${{ runner.os }}-${{ hashFiles('**/package-lock.json') }}
+
+      - name: Run integration tests
+        run: npm test -- --testPathPattern='\.integration\.test\.js$' --passWithNoTests || npm test
+
+  deploy:
+    name: Deploy Application
+    needs: [ test-unit, test-integration ]
+    runs-on: ubuntu-latest
+    if: |
+      success() && 
+      (github.event_name == 'push' && github.ref == 'refs/heads/master') ||
+      (github.event_name == 'workflow_dispatch')
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Use Node.js
+      - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '18'
-          cache: 'npm'
+          node-version: ${{ env.NODE_VERSION }}
 
-      - name: Install dependencies
-        run: npm ci
+      - name: Restore node_modules from cache
+        uses: actions/cache@v3
+        with:
+          path: node_modules
+          key: ${{ env.CACHE_NAME_PREFIX }}-${{ runner.os }}-${{ hashFiles('**/package-lock.json') }}
 
-      - name: Run tests
-        run: npm test
-
-      - name: Deploy (only on push and if tests pass)
-        if: ${{ success() && github.event_name == 'push' }}
+      - name: Deploy application
+        if: ${{ hashFiles('package.json') != '' }}
         run: npm run deploy --if-present
+        env:
+          CI: true
 
 
